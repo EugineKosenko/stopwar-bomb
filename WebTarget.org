@@ -1,0 +1,293 @@
+#+title: =Web-цель=
+
+* Главный файл
+:PROPERTIES:
+:ID:       b9c69ddd-e30c-49c3-889d-a84e81a6bfeb
+:END:
+
+#+begin_src c++ :noweb yes :tangle WebTarget.cc
+#include "WebTarget.hh"
+#include "HTTPTarget.hh"
+#include "HTTPSTarget.hh"
+
+<<bomb:WebTarget:Данные>>
+
+<<bomb:WebTarget:Функции>>
+#+end_src
+
+* Заголовки
+:PROPERTIES:
+:ID:       93d4eeaa-4efd-4206-8bc6-82ab631bc817
+:END:
+
+#+begin_src c++ :noweb yes :tangle WebTarget.hh
+#ifndef _WEB_TARGET_HH_
+#define _WEB_TARGET_HH_
+
+<<bomb:WebTarget:Заголовки>>
+
+<<bomb:WebTarget:Пространства>>
+
+<<bomb:WebTarget:Определения>>
+
+#endif
+#+end_src
+
+* Типы
+
+#+begin_src c++ :noweb yes :noweb-ref bomb:WebTarget:Определения
+  class WebTarget {
+  public:
+    <<bomb:WebTarget:Интерфейс:Типы>>
+    <<bomb:WebTarget:Интерфейс:Определения>>
+  protected:
+    <<bomb:WebTarget:Абстракция:Типы>>
+    <<bomb:WebTarget:Абстракция:Определения>>
+
+    <<bomb:WebTarget:Дружественные-связи>>
+  private:
+    <<bomb:WebTarget:Реализация:Типы>>
+    <<bomb:WebTarget:Реализация:Определения>>
+
+    <<bomb:WebTarget:Дружественные-связи>>
+  };
+#+end_src
+
+* Атрибуты
+
+** Основные атрибуты
+
+Класс цели содержит атрибуты =HTTP=-запроса:
+
+- службу;
+- хост;
+- порт;
+- путь;
+- параметры.
+
+#+begin_src c++ :noweb-ref bomb:WebTarget:Заголовки
+  #include <string>
+#+end_src
+
+#+begin_src c++ :noweb-ref bomb:WebTarget:Абстракция:Определения
+  std::string _service;
+  std::string _host;
+  unsigned _port;
+  std::string _path;
+  std::string _params;
+#+end_src
+
+** Количество генераторов
+
+#+begin_src c++ :noweb-ref bomb:WebTarget:Абстракция:Определения
+  unsigned _genCount;
+#+end_src
+
+#+begin_src c++ :noweb-ref bomb:WebTarget:Интерфейс:Определения
+  unsigned genCount() const { return _genCount; }
+#+end_src
+
+** Служба ввода-вывода
+
+Служба ввода-вывода является общей для всей системы. Чтобы упростить создание целей определим эту службу
+как общее статическое поле класса.
+
+#+begin_src c++ :noweb-ref bomb:WebTarget:Заголовки
+  #include <boost/asio.hpp>
+#+end_src
+
+#+begin_src c++ :noweb-ref bomb:WebTarget:Интерфейс:Определения
+  static boost::asio::io_service ioService;
+#+end_src
+ 
+#+begin_src c++ :noweb-ref bomb:WebTarget:Данные
+  boost::asio::io_service WebTarget::ioService;
+#+end_src
+ 
+** Преобразователь имен
+
+#+begin_src c++ :noweb-ref bomb:WebTarget:Пространства
+  using boost::asio::ip::tcp;
+#+end_src
+
+#+begin_src c++ :noweb-ref bomb:WebTarget:Абстракция:Определения
+  static tcp::resolver _resolver;
+#+end_src
+
+#+begin_src c++ :noweb-ref bomb:WebTarget:Данные
+  tcp::resolver WebTarget::_resolver(ioService);
+#+end_src
+
+** Признак отладки
+
+#+begin_src c++ :noweb-ref bomb:WebTarget:Абстракция:Определения
+  bool _isDebugged;
+#+end_src
+
+#+begin_src c++ :noweb-ref bomb:WebTarget:Интерфейс:Определения
+  void debug(bool isDebugged = true) { _isDebugged = isDebugged; }
+#+end_src
+
+** Состояние генератора
+
+#+begin_src c++ :noweb-ref bomb:WebTarget:Абстракция:Определения
+  std::string _ioStatus;
+#+end_src
+
+#+begin_src c++ :noweb-ref bomb:WebTarget:Интерфейс:Определения
+  std::string ioStatus() const { return _ioStatus; }
+#+end_src
+
+** Ошибка генератора
+
+При выполнении запроса возможны две ошибки, ошибка ввода-вывода ~ioError~ и =HTTP=-код ~httpStatus~,
+который определяет корректность выполнения =HTTP=-запроса.
+
+#+begin_src c++ :noweb-ref bomb:WebTarget:Абстракция:Определения
+  boost::system::error_code _ioError;
+  unsigned _httpStatus;
+#+end_src
+
+#+begin_src c++ :noweb-ref bomb:WebTarget:Интерфейс:Определения
+  boost::system::error_code ioError() const { return _ioError; }
+  unsigned httpStatus() const { return _httpStatus; }
+#+end_src
+
+* Предикаты
+
+** Признак активности
+
+/Активной/ считается цель, по которой работает хотя бы один генератор. Однако, этого недостаточно. Введем
+функцию ~isFinished~, которая не просто неактивна, но по которой нужно перезапустить опрос.
+
+#+begin_src c++ :noweb-ref bomb:WebTarget:Интерфейс:Определения
+  bool isActive() const;
+  bool isFinished() const;
+#+end_src
+
+#+begin_src c++ :noweb yes :noweb-ref bomb:WebTarget:Функции
+  bool WebTarget::isActive() const {
+    return _genCount > 0;
+  }
+
+  bool WebTarget::isFinished() const {
+    return !isActive() && _ioError.value() == 0 && _httpStatus == 0;
+  }
+#+end_src
+
+* Наблюдатели
+
+** =URL=-адрес
+
+#+begin_src c++ :noweb-ref bomb:WebTarget:Интерфейс:Определения
+  std::string url() const {
+    return
+      _service + "://" + _host
+      + ((_port == 80 || _port == 443) ? "" : (":" + std::to_string(_port)))
+      + _path + _params;
+  }
+#+end_src
+
+** Заголовок запроса
+
+#+begin_src c++ :noweb-ref bomb:WebTarget:Абстракция:Определения
+  std::string reqHeader() const {
+    return
+      "GET " + (_path == "" ? "/" : _path) + _params + " HTTP/1.1\n"
+      + "Host: " + _host + "\n"
+      + "User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/102.0.5005.40 Safari/537.36Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/102.0.5005.40 Safari/537.36\n"
+      + "Connection: close\n\n";
+  }
+#+end_src
+
+* Выполнение запроса
+
+Запрос выполняет чистая виртуальная функция ~newRequest~, которая реализуется в дочерних классах.
+
+#+begin_src c++ :noweb-ref bomb:WebTarget:Интерфейс:Определения
+  virtual void call() = 0;
+#+end_src
+
+* Создание и уничтожение
+** Конструктор по атрибутам
+
+#+begin_src c++ :noweb-ref bomb:WebTarget:Абстракция:Определения
+  WebTarget(std::string /* service */
+            , std::string /* host */
+            , unsigned /* port */
+            , std::string /* path */
+            , std::string /* params */);
+#+end_src
+
+#+begin_src c++ :noweb-ref bomb:WebTarget:Функции
+  WebTarget::WebTarget(std::string service
+                       , std::string host
+                       , unsigned port
+                       , std::string path
+                       , std::string params)
+    : _service(service)
+    , _host(host)
+    , _port(port)
+    , _path(path)
+    , _params(params)
+    , _genCount(0)
+    , _isDebugged(false)
+    , _ioStatus("none")
+    , _ioError()
+    , _httpStatus(0) { }
+#+end_src
+
+** Конструктор по =JSON=-объекту
+
+#+begin_src c++ :noweb-ref bomb:WebTarget:Заголовки
+  #include <jsoncpp/json/json.h>
+#+end_src
+
+#+begin_src c++ :noweb-ref bomb:WebTarget:Абстракция:Определения
+  WebTarget(Json::Value);
+#+end_src
+
+#+begin_src c++ :noweb-ref bomb:WebTarget:Функции
+  WebTarget::WebTarget(Json::Value json)
+    :  WebTarget(json["service"].asString()
+                 , json["host"].asString()
+                 , json["port"].asUInt()
+                 , json["path"].asString()
+                 , json["params"].asString()) { }
+#+end_src
+
+** TODO Фабрика целей
+
+Абстрактный класс ~WebTarget~ сам по себе никогда не создается, вместо него с помощью статического
+метода-фабрики ~make~ создаются экземпляры дочерних классов, конкретный тип которых определяется типом
+службы. Такое создание нужно только при парсинге цели, поэтому фабрика принимает =JSON=-значение.
+
+#+begin_src c++ :noweb-ref bomb:WebTarget:Интерфейс:Определения
+  static WebTarget *make(Json::Value);
+#+end_src
+
+#+begin_src c++ :noweb-ref bomb:WebTarget:Функции
+  WebTarget *WebTarget::make(Json::Value json) {
+    if (json["service"].asString() == "http") {
+      return new HTTPTarget(json);
+    } else if (json["service"].asString() == "https") {
+      return new HTTPSTarget(json);
+    } else {
+      throw "Unknown service";
+    }
+  }
+#+end_src
+
+* Ввод и вывод
+
+#+begin_src c++ :noweb-ref bomb:WebTarget:Интерфейс:Определения
+  std::ostream &show(std::ostream &) const;
+#+end_src
+
+#+begin_src c++ :noweb-ref bomb:WebTarget:Функции
+  std::ostream &WebTarget::show(std::ostream &os) const {
+    os << url() << " " << _ioStatus << ": " << _ioError.message() << " " << _httpStatus << ", " << _genCount << std::endl;
+    return os;
+  }
+#+end_src
+

@@ -1,0 +1,14 @@
+#+title: Система сборки
+
+[[https://scons.org/doc/production/PDF/scons-user.pdf][Руководство пользователя]] и [[https://scons.org/doc/production/PDF/scons-man.pdf][Справочник]]
+
+* Главный файл
+:PROPERTIES:
+:ID:       f980792c-5f30-4107-ba6c-5e2a3b2f3bd7
+:END:
+
+#+begin_src python :tangle SConstruct
+  Program('bomb', ['bomb.cc', 'WebTarget.cc', 'HTTPTarget.cc', 'HTTPSTarget.cc'], LIBS=['boost_system', 'pthread', 'jsoncpp', 'ssl', 'crypto'])
+  #Program('testHTTPTarget', ['testHTTPTarget.cc', 'HTTPTarget.cc'], LIBS=['boost_system', 'pthread'])
+  Program('testHTTPSTarget', ['testHTTPSTarget.cc', 'WebTarget.cc', 'HTTPTarget.cc', 'HTTPSTarget.cc'], LIBS=['boost_system', 'pthread', 'jsoncpp', 'ssl', 'crypto'])
+#+end_src

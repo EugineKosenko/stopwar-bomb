@@ -1,0 +1,264 @@
+#+title: =HTTP=-цель
+
+* Главный файл
+:PROPERTIES:
+:ID:       f499d5d8-96b0-4523-87d2-383f0765208f
+:END:
+
+#+begin_src c++ :noweb yes :tangle HTTPTarget.cc
+#include "HTTPTarget.hh"
+
+<<bomb:HTTPTarget:Данные>>
+
+<<bomb:HTTPTarget:Функции>>
+#+end_src
+
+* Заголовки
+:PROPERTIES:
+:ID:       e1fb3c13-5e66-4272-8a92-0bf47dcf8a99
+:END:
+
+#+begin_src c++ :noweb yes :tangle HTTPTarget.hh
+#ifndef _TARGET_HH_
+#define _TARGET_HH_
+
+<<bomb:HTTPTarget:Заголовки>>
+
+<<bomb:HTTPTarget:Пространства>>
+
+<<bomb:HTTPTarget:Определения>>
+
+#endif
+#+end_src
+
+* Типы
+
+#+begin_src c++ :noweb-ref bomb:HTTPTarget:Заголовки
+  #include "WebTarget.hh"
+#+end_src
+
+#+begin_src c++ :noweb yes :noweb-ref bomb:HTTPTarget:Определения
+  class HTTPTarget: public WebTarget {
+  public:
+    <<bomb:HTTPTarget:Интерфейс:Типы>>
+    <<bomb:HTTPTarget:Интерфейс:Определения>>
+  private:
+    <<bomb:HTTPTarget:Реализация:Типы>>
+    <<bomb:HTTPTarget:Реализация:Определения>>
+
+    <<bomb:HTTPTarget:Дружественные-связи>>
+  };
+#+end_src
+
+* Выполнение запроса
+
+Цель может выполнить запрос в соответствии со своим описанием. Запрос выполняется в три этапа:
+
+- создание и подключение сокета;
+- отправка запроса;
+- чтение результата.
+
+Каждый этап выполняется в отдельном обработчике.
+
+** TODO Создание и подключение сокета
+
+Асинхронная функция-член ~firstRequest~ запускает выполнение запроса для нового токена, а ~nextRequest~
+--- для уже существующего сокета. По сути ~firstRequest~ создает сокет и вызывает для него ~nextRequest~.
+
+#+begin_src c++ :noweb-ref bomb:HTTPTarget:Заголовки
+  #include <boost/bind/bind.hpp>
+  #include <iostream>
+#+end_src
+
+#+begin_src c++ :noweb-ref bomb:HTTPTarget:Реализация:Определения
+  void call();
+  void nextRequest(tcp::socket *);
+#+end_src
+
+#+begin_src c++ :noweb yes :noweb-ref bomb:HTTPTarget:Функции
+  void HTTPTarget::call() {
+    auto s = new tcp::socket(ioService);
+    nextRequest(s);
+    _genCount += 1;
+  }
+
+  void HTTPTarget::nextRequest(tcp::socket *s) {
+    try {
+      auto a = address();
+      boost::asio::async_connect(*s, a, boost::bind(&HTTPTarget::sendRequest, this, boost::asio::placeholders::error, a, s));
+    } catch (std::exception &e) {
+      if (_isDebugged) {
+        std::cout << url() << " resolve: " << e.what() << std::endl;
+      }
+      delete s;
+      _ioError = boost::system::error_code(boost::system::errc::stream_timeout
+                                           , boost::system::system_category());
+      _httpStatus = 0;
+      _genCount -= 1;
+    }
+  }
+#+end_src
+
+** TODO Отправка запроса
+
+#+begin_src c++ :noweb-ref bomb:HTTPTarget:Реализация:Определения
+  void sendRequest(const boost::system::error_code&
+                   , tcp::resolver::iterator
+                   , tcp::socket *);
+#+end_src
+
+#+begin_src c++ :noweb yes :noweb-ref bomb:HTTPTarget:Функции
+  void HTTPTarget::sendRequest(const boost::system::error_code& e
+                           , tcp::resolver::iterator a
+                           , tcp::socket *s) {
+    if (e) {
+      if (_isDebugged) {
+        std::cout << url() << " connect: " << e.message() << std::endl;
+      }
+      delete s;
+      _ioError = e;
+      _httpStatus = 0;
+      _genCount -= 1;
+      return;
+    }
+
+    <<bomb:HTTPTarget:sendRequest:Отправить-запрос>>
+
+    <<bomb:HTTPTarget:sendRequest:Получить-ответ>>
+
+    delete s;
+    call();
+    call();
+  }
+#+end_src
+
+#+begin_src c++ :noweb-ref bomb:HTTPTarget:sendRequest:Отправить-запрос
+  boost::asio::streambuf req;
+  std::ostream rs(&req);
+  rs << reqHeader();
+
+  boost::system::error_code ee;
+  boost::asio::write(*s, req, ee);
+  if (ee) {
+    if (!_isDebugged) {
+      std::cout << url() << " write: " << ee.message() << std::endl;
+    }
+    delete s;
+    _ioError = ee;
+    _httpStatus = 0;
+    _genCount -= 1;
+    return;
+  }
+#+end_src
+
+#+begin_src c++ :noweb-ref bomb:HTTPTarget:sendRequest:Получить-ответ
+  boost::asio::streambuf resp;
+  boost::asio::read_until(*s, resp, "\n", ee);
+
+  if (ee) {
+    if (!_isDebugged) {
+      std::cout << url() << " read: " << ee.message() << std::endl;
+    }
+    delete s;
+    _ioError = ee;
+    _httpStatus = 0;
+    _genCount -= 1;
+    return;
+  }
+
+  std::istream respStream(&resp);
+  std::string httpVersion;
+  respStream >> httpVersion;
+  respStream >> _httpStatus;
+  if (_isDebugged) {
+    std::cout << url() << " status: " << _httpStatus << std::endl;
+  }
+  if (_httpStatus != 200 && _httpStatus != 301) {
+    if (_isDebugged) {
+      boost::asio::read(*s, resp, ee);
+      std::string line;
+      while (std::getline(respStream, line)) {
+        std::cout << line << std::endl;
+      }
+    }
+    delete s;
+    _genCount -= 1;
+    return;
+  }
+#+end_src
+
+* Создание и уничтожение
+** Конструктор по атрибутам
+
+#+begin_src c++ :noweb-ref bomb:HTTPTarget:Интерфейс:Определения
+  HTTPTarget(std::string service, std::string host, unsigned port, std::string path, std::string params):
+    WebTarget(service, host, port, path, params) {}
+#+end_src
+
+** Конструктор по =JSON=-объекту
+
+#+begin_src c++ :noweb-ref bomb:HTTPTarget:Интерфейс:Определения
+  HTTPTarget(Json::Value json): WebTarget(json) {}
+#+end_src
+
+* Тестирование
+:PROPERTIES:
+:ID:       eef38a28-49a9-4a05-93c1-3cec6060cd88
+:END:
+
+#+begin_src c++ :tangle testHTTPTarget.cc
+  #include "HTTPTarget.hh"
+  #include <iostream>
+  #include <chrono>
+
+  HTTPTarget ts[] =
+    { HTTPTarget("http", "afanasy.biz", 80, "/")
+      , HTTPTarget("http", "business-gazeta.ru", 80, "/")
+      , HTTPTarget("http", "osnmedia.ru", 80, "/")
+      , HTTPTarget("http", "rbc.ru", 80, "/")
+      , HTTPTarget("http", "tvzvezda.ru", 80, "/")
+      //, HTTPTarget("http", "360tv.ru", 80, "/")
+    };
+
+  void print(const boost::system::error_code&
+             , boost::asio::deadline_timer* t) {
+    for (unsigned i = 0; i < 5; i += 1) {
+      ts[i].show(std::cout);
+      if (!ts[i].isActive()) {
+        ts[i].firstRequest();
+      }
+    }
+    t->expires_at(t->expires_at() + boost::posix_time::seconds(1));
+    t->async_wait(boost::bind(print
+                              , boost::asio::placeholders::error, t));
+  }
+
+  void controller(HTTPTarget ts[]) {
+    while (true) {
+      for (unsigned i = 0; i < 5; i += 1) {
+        if (!ts[i].isActive()) {
+          ts[i].firstRequest();
+        }
+      }
+      HTTPTarget::ioService.run_one();
+    }
+  }
+
+  int main(int argc, char *argv[]) {
+    boost::asio::io_service ioService;
+
+    std::thread ct(controller, ts);
+
+    while (true) {
+      for (unsigned i = 0; i < 5; i += 1) {
+        ts[i].show(std::cout);
+      }
+      std::cout << std::endl;
+      std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+    }
+
+    ct.join();
+
+    return 0;
+  }
+#+end_src

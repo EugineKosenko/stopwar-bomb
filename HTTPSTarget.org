@@ -1,0 +1,413 @@
+#+title: =HTTPS=-Цель
+
+/=HTTPS=-цель/ или /=SSL=-цель, =TLS=-цель/ использует особый вид сокета, который позволяет установить
+защищенное соединение =HTTPS=/=SSL=/=TLS=.
+
+* Главный файл
+:PROPERTIES:
+:ID:       f499d5d8-96b0-4523-87d2-383f0765208f
+:END:
+
+#+begin_src c++ :noweb yes :tangle HTTPSTarget.cc
+#include "HTTPSTarget.hh"
+
+<<bomb:HTTPSTarget:Данные>>
+
+<<bomb:HTTPSTarget:Функции>>
+#+end_src
+
+* Заголовки
+:PROPERTIES:
+:ID:       e1fb3c13-5e66-4272-8a92-0bf47dcf8a99
+:END:
+
+#+begin_src c++ :noweb yes :tangle HTTPSTarget.hh
+#ifndef _HTTPS_TARGET_HH_
+#define _HTTPS_TARGET_HH_
+
+<<bomb:HTTPSTarget:Заголовки>>
+
+<<bomb:HTTPSTarget:Пространства>>
+
+<<bomb:HTTPSTarget:Определения>>
+
+#endif
+#+end_src
+
+* Типы
+
+#+begin_src c++ :noweb-ref bomb:HTTPSTarget:Заголовки
+  #include "WebTarget.hh"
+#+end_src
+
+#+begin_src c++ :noweb yes :noweb-ref bomb:HTTPSTarget:Определения
+  class HTTPSTarget: public WebTarget {
+  public:
+    <<bomb:HTTPSTarget:Интерфейс:Типы>>
+    <<bomb:HTTPSTarget:Интерфейс:Определения>>
+  private:
+    <<bomb:HTTPSTarget:Реализация:Типы>>
+    <<bomb:HTTPSTarget:Реализация:Определения>>
+
+    <<bomb:HTTPSTarget:Дружественные-связи>>
+  };
+#+end_src
+
+** Генератор
+
+/Генератор/ описывает один сеанс запроса к цели. В идеале хранить и обрабатывать генераторы сложным
+образом, однако сейчас генератор является довольно простой структурой, которая содержит только /Сокет/
+(=socket=) и /Буфер/ обмена (=buffer=). Эти переменные объединены в генератор, чтобы их проще было их
+создавать и удалять.
+
+*** TODO Добавить в генератор состояние и код ошибки
+
+Сокет и буфер обмена были выделены в генератор, так как у одной цели может быть много генераторов, каждый
+из которых может иметь свой собственный сокет и буфер. В генератор можно также перенести информацию о
+процессе соединения.
+
+#+begin_src c++ :noweb-ref bomb:HTTPSTarget:Реализация:Типы
+  class Generator {
+  public:
+    ssl::stream<ip::tcp::socket> _socket;
+    boost::asio::streambuf _buffer;
+    Generator()
+      : _socket(HTTPSTarget::ioService, HTTPSTarget::_sslContext)
+      , _buffer() { }
+  };
+#+end_src
+
+*** TODO Перенести цепочку вызовов в генератор
+
+* Атрибуты
+
+** =SSL=-контекст
+
+#+begin_src c++ :noweb-ref bomb:HTTPSTarget:Реализация:Определения
+  static ssl::context _sslContext;
+#+end_src
+
+#+begin_src c++ :noweb-ref bomb:HTTPSTarget:Данные
+  ssl::context HTTPSTarget::_sslContext(ssl::context::method::sslv23_client);
+#+end_src
+
+* Генератор
+
+/Генератором/ =HTTPS=-цели называется набор асинхронных функций, которые асинхронно, но последовательно
+(в виде цепочки) выполняют следующие /Этапы/ генерации:
+
+- вызов (~call~);
+- преобразование имени (~resolve~);
+- подключение (~connect~);
+- рукопожатие (~handshake~);
+- отправка (~send~);
+- прием (~receive~);
+- обработка (~process~).
+
+В зависимости от того, какая из этих функций была завершена последней, в переменную ~ioStatus~
+сохраняется состояние цели после пройденного этапа:
+
+- ~called~ в ~resolve~;
+- ~resolved~ в ~connect~;
+- ~connected~ в ~handshake~;
+- ~handshaked~ в ~send~;
+- ~sent~ в ~receive~;
+- ~received~ в ~process~.
+
+Сразу после создания цели она находится в особом состоянии ~none~, которое означает, что для данной цели
+генератор еще ни разу не вызывался. При вызове цель сразу переходит в состояние ~called~. После
+выполнения последнего этапа ~process~ цель переходит в состояние ~received~, и остается в нем до тех пор,
+пока контроллер целей не сохранит состояние цели, после чего он может снова сбросить состояние в ~none~.
+
+Каждая функция, начиная с ~resolve~, асинхронно вызывает следующую, в которую передает код ошибки. В
+начале каждой функции, начиная с ~connect~, сохраняет состояние этот код сохраняется в переменной
+~ioError~, и если состояние выполнения неуспешно, то цепочка прерывается. В таком случае в цели
+сохраняется последнее состояние и код ошибки.
+
+После выполнения этапа ~process~, если выполнение было успешно, в поле ~httpStatus~ сохраняется
+=HTTP=-код, который позволяет определить общую успешность проекта.
+
+В случае успешного выполнения запроса генератор повторяет выполнение самого себя и новым вызовом
+порождает новый генератор. Таким образом над одной целью может работать множество конкурирующих
+генераторов, но состояние цели определяется последним выполненным этапом любого генератора.
+
+** Вызов
+
+Функция вызова ~call~ является единственной функцией интерфейса без параметров. Она инициализирует
+состояние цели и асинхнонно вызывает разрешение.
+
+#+begin_src c++ :noweb-ref bomb:HTTPSTarget:Интерфейс:Определения
+  void call();
+#+end_src
+
+#+begin_src c++ :noweb-ref bomb:HTTPSTarget:Пространства
+  using namespace boost::asio;
+#+end_src
+
+#+begin_src c++ :noweb-ref bomb:HTTPSTarget:Заголовки
+  #include <boost/bind/bind.hpp>
+  #include <iostream>
+#+end_src
+
+#+begin_src c++ :noweb yes :noweb-ref bomb:HTTPSTarget:Функции
+  void HTTPSTarget::call() {
+    _genCount += 1;
+
+    _ioStatus = "none";
+    _ioError = boost::system::error_code();
+    _httpStatus = 0;
+
+    resolve();
+  }
+#+end_src
+
+** Преобразование имени
+
+#+begin_src c++ :noweb-ref bomb:HTTPSTarget:Реализация:Определения
+  void resolve();
+#+end_src
+
+#+begin_src c++ :noweb yes :noweb-ref bomb:HTTPSTarget:Функции
+  void HTTPSTarget::resolve() {
+    _ioStatus = "called";
+
+    if (_isDebugged) {
+      std::cout << url() << " " << _ioStatus << std::endl;
+    }
+
+    _resolver.async_resolve(tcp::resolver::query(_host, std::to_string(_port))
+                            , boost::bind(&HTTPSTarget::connect, this
+                                          , boost::asio::placeholders::error
+                                          , boost::asio::placeholders::iterator));
+    _ioStatus = "resolve";
+  }
+#+end_src
+
+** Подключение
+
+#+begin_src c++ :noweb-ref bomb:HTTPSTarget:Реализация:Определения
+  void connect(const boost::system::error_code &
+               , tcp::resolver::iterator);
+#+end_src
+
+#+begin_src c++ :noweb-ref bomb:HTTPSTarget:Заголовки
+  #include <boost/asio/ssl.hpp>
+#+end_src
+
+#+begin_src c++ :noweb yes :noweb-ref bomb:HTTPSTarget:Функции
+  void HTTPSTarget::connect(const boost::system::error_code &e
+                            , tcp::resolver::iterator a) {
+    _ioStatus = "resolved";
+    _ioError = e;
+
+    if (_isDebugged) {
+      std::cout << url() << " " << _ioStatus << ": " << _ioError.message() << std::endl;
+    }
+
+    if (_ioError) {
+      _genCount -= 1;
+      return;
+    }
+
+    auto g = new Generator();
+    boost::asio::async_connect(g->_socket.lowest_layer(), a
+                               , boost::bind(&HTTPSTarget::handshake
+                                             , this, boost::asio::placeholders::error, g));
+    _ioStatus = "connect";
+  }
+#+end_src
+
+** Рукопожатие
+
+#+begin_src c++ :noweb-ref bomb:HTTPSTarget:Реализация:Определения
+  void handshake(const boost::system::error_code &, Generator *);
+#+end_src
+
+#+begin_src c++ :noweb yes :noweb-ref bomb:HTTPSTarget:Функции
+  void HTTPSTarget::handshake(const boost::system::error_code &e
+                              , Generator *g) {
+    _ioStatus = "connected";
+    _ioError = e;
+
+    if (_isDebugged) {
+      std::cout << url() << " " << _ioStatus << ": " << _ioError.message() << std::endl;
+    }
+
+    if (_ioError) {
+      delete g;
+      _genCount -= 1;
+      return;
+    }
+
+    g->_socket.async_handshake(ssl::stream_base::handshake_type::client
+                               , boost::bind(&HTTPSTarget::send
+                                             , this, boost::asio::placeholders::error, g));
+    _ioStatus = "handshake";
+  }
+#+end_src
+
+** Отправка
+
+#+begin_src c++ :noweb-ref bomb:HTTPSTarget:Реализация:Определения
+  void send(const boost::system::error_code &, Generator *);
+#+end_src
+
+#+begin_src c++ :noweb yes :noweb-ref bomb:HTTPSTarget:Функции
+  void HTTPSTarget::send(const boost::system::error_code &e
+                              , Generator *g) {
+    _ioStatus = "handshaked";
+    _ioError = e;
+
+    if (_isDebugged) {
+      std::cout << url() << " " << _ioStatus << ": " << _ioError.message() << std::endl;
+    }
+
+    if (_ioError) {
+      delete g;
+      _genCount -= 1;
+      return;
+    }
+
+    std::ostream os(&g->_buffer);
+    os << reqHeader();
+
+    boost::asio::async_write(g->_socket, g->_buffer
+                             , boost::bind(&HTTPSTarget::receive, this
+                                           , boost::asio::placeholders::error
+                                           , boost::asio::placeholders::bytes_transferred
+                                           , g));
+    _ioStatus = "send";
+  }
+#+end_src
+
+** Прием
+
+#+begin_src c++ :noweb-ref bomb:HTTPSTarget:Реализация:Определения
+  void receive(const boost::system::error_code &
+               , std::size_t
+               , Generator *);
+#+end_src
+
+#+begin_src c++ :noweb yes :noweb-ref bomb:HTTPSTarget:Функции
+  void HTTPSTarget::receive(const boost::system::error_code &e
+                            , std::size_t bt
+                            , Generator *g) {
+    _ioStatus = "sent";
+    _ioError = e;
+
+    if (_isDebugged) {
+      std::cout << url() << " " << _ioStatus << ": " << _ioError.message() << " " << g->_buffer.size() << "/" << bt << std::endl;
+    }
+
+    if (_ioError || g->_buffer.size() != 0) {
+      delete g;
+      _genCount -= 1;
+      return;
+    }
+
+    boost::asio::async_read_until(g->_socket, g->_buffer, "\n"
+                                  , boost::bind(&HTTPSTarget::process, this
+                                                , boost::asio::placeholders::error
+                                                , boost::asio::placeholders::bytes_transferred
+                                                , g));
+    _ioStatus = "receive";
+  }
+#+end_src
+
+** Обработка
+
+#+begin_src c++ :noweb-ref bomb:HTTPSTarget:Реализация:Определения
+  void process(const boost::system::error_code &
+               , std::size_t
+               , Generator *);
+#+end_src
+
+#+begin_src c++ :noweb yes :noweb-ref bomb:HTTPSTarget:Функции
+  void HTTPSTarget::process(const boost::system::error_code &e
+                            , std::size_t br
+                            , Generator *g) {
+    _ioStatus = "received";
+    _ioError = e;
+
+    if (_isDebugged) {
+      std::cout << url() << " " << _ioStatus << ": " << _ioError.message() << std::endl;
+    }
+
+    if (_ioError) {
+      delete g;
+      _genCount -= 1;
+      return;
+    }
+
+    _ioStatus = "processed";
+
+    std::istream is(&g->_buffer);
+    std::string v;
+    is >> v;
+    is >> _httpStatus;
+
+    if (_isDebugged) {
+      std::string m;
+      std::getline(is, m);
+      std::cout << url() << " " << _ioStatus << ": " << _httpStatus << " " << m << std::endl;
+    }
+
+    if (_httpStatus != 200
+        && _httpStatus != 301
+        && _httpStatus != 302
+        && _httpStatus != 303
+        ) {
+      if (_isDebugged) {
+        boost::system::error_code e;
+        boost::asio::read(g->_socket, g->_buffer, e);
+        std::string l;
+        while (std::getline(is, l)) {
+          std::cout << l << std::endl;
+        }
+      }
+      delete g;
+      _genCount -= 1;
+      return;
+    }
+
+    delete g;
+    call();
+    if (!_isDebugged) {
+      call();
+    }
+  }
+#+end_src
+
+* Создание и уничтожение
+** Конструктор по атрибутам
+
+#+begin_src c++ :noweb-ref bomb:HTTPSTarget:Интерфейс:Определения
+   HTTPSTarget(std::string service, std::string host, unsigned port, std::string path, std::string params)
+     : WebTarget(service, host, port, path, params) {}
+#+end_src
+
+** Конструктор по =JSON=-объекту
+
+#+begin_src c++ :noweb-ref bomb:HTTPSTarget:Интерфейс:Определения
+  HTTPSTarget(Json::Value json): WebTarget(json) {}
+#+end_src
+
+* Тестирование
+:PROPERTIES:
+:ID:       eef38a28-49a9-4a05-93c1-3cec6060cd88
+:END:
+
+#+begin_src c++ :tangle testHTTPSTarget.cc
+  #include "HTTPSTarget.hh"
+  #include <iostream>
+
+  int main(int argc, char *argv[]) {
+    HTTPSTarget t("https", argv[1], 443, "", "");
+    t.debug();
+    t.call();
+
+    WebTarget::ioService.run();
+
+    return 0;
+  }
+#+end_src
